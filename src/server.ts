@@ -9,9 +9,8 @@ let followUpInterval: NodeJS.Timeout;
 
 async function start() {
   // 🚀 Start HTTP server FIRST (important for Railway)
-  const PORT = process.env.PORT || env.PORT || 4000;
-  console.log("PORT selected for app is ", PORT);
-  const server = app.listen(PORT, () => {
+  const PORT = process.env.PORT ? Number(process.env.PORT) : 4000;
+  const server = app.listen(PORT, "0.0.0.0", () => {
     logger.info(`🚀 Propflow API running on port ${PORT} [${env.NODE_ENV}]`);
   });
 
