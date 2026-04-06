@@ -1,0 +1,395 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider        = "prisma-client"
+  output          = "../src/generated/prisma"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Tenant {
+  id        String   @id @default(uuid())
+  name      String
+  subdomain String   @unique
+  plan      Plan     @default(STARTER)
+  isActive  Boolean  @default(true)
+  config    Json     @default("{}")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users     User[]
+  projects  Project[]
+  leads     Lead[]
+  units     Unit[]
+  comms     Communication[]
+  bookings  Booking[]
+  followUps FollowUpTask[]
+  aiScores  AIScore[]
+
+  @@map("tenants")
+}
+
+enum Plan {
+  STARTER
+  GROWTH
+  ENTERPRISE
+}
+
+model User {
+  id        String   @id @default(uuid())
+  tenantId  String
+  name      String
+  email     String
+  phone     String?
+  role      UserRole @default(AGENT)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant        Tenant             @relation(fields: [tenantId], references: [id])
+  assignedLeads Lead[]             @relation("AssignedLeads")
+  stageLogs     PipelineStageLog[] @relation("MovedBy")
+  siteVisits    SiteVisit[]        @relation("AgentVisits")
+  followUps     FollowUpTask[]     @relation("AssignedFollowUps")
+
+  @@unique([tenantId, email])
+  @@index([tenantId])
+  @@map("users")
+}
+
+enum UserRole {
+  SUPER_ADMIN
+  BUILDER_ADMIN
+  MANAGER
+  AGENT
+}
+
+// ─────────────────────────────────────────────
+// PROJECTS & INVENTORY
+// ─────────────────────────────────────────────
+
+model Project {
+  id          String        @id @default(uuid())
+  tenantId    String
+  name        String
+  location    String
+  description String?
+  status      ProjectStatus @default(ACTIVE)
+  amenities   String[]
+  config      Json          @default("{}")
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  tenant     Tenant      @relation(fields: [tenantId], references: [id])
+  units      Unit[]
+  leads      Lead[]
+  siteVisits SiteVisit[]
+
+  @@index([tenantId])
+  @@map("projects")
+}
+
+enum ProjectStatus {
+  ACTIVE
+  COMPLETED
+  ON_HOLD
+}
+
+model Unit {
+  id         String     @id @default(uuid())
+  tenantId   String
+  projectId  String
+  unitNumber String
+  tower      String?
+  floor      Int?
+  type       String // e.g. "2BHK", "3BHK", "Studio"
+  areaSqft   Decimal?
+  price      Decimal
+  status     UnitStatus @default(AVAILABLE)
+  features   String[]
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id])
+  project  Project   @relation(fields: [projectId], references: [id])
+  bookings Booking[]
+
+  @@unique([projectId, unitNumber])
+  @@index([tenantId, projectId])
+  @@index([status])
+  @@map("units")
+}
+
+enum UnitStatus {
+  AVAILABLE
+  HOLD
+  BOOKED
+  SOLD
+}
+
+// ─────────────────────────────────────────────
+// LEADS & PIPELINE
+// ─────────────────────────────────────────────
+
+model Lead {
+  id              String     @id @default(uuid())
+  tenantId        String
+  projectId       String?
+  assignedToId    String?
+  name            String
+  phone           String
+  email           String?
+  source          LeadSource @default(OTHER)
+  utmSource       String?
+  utmMedium       String?
+  utmCampaign     String?
+  stage           LeadStage  @default(NEW)
+  score           Int        @default(0) // 0–100 AI-computed
+  budget          Decimal?
+  notes           String?
+  isDeleted       Boolean    @default(false)
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+  lastContactedAt DateTime?
+
+  tenant     Tenant   @relation(fields: [tenantId], references: [id])
+  project    Project? @relation(fields: [projectId], references: [id])
+  assignedTo User?    @relation("AssignedLeads", fields: [assignedToId], references: [id])
+
+  stageLogs  PipelineStageLog[]
+  comms      Communication[]
+  siteVisits SiteVisit[]
+  bookings   Booking[]
+  aiScores   AIScore[]
+  followUps  FollowUpTask[]
+
+  @@unique([tenantId, phone])
+  @@index([tenantId, stage])
+  @@index([tenantId, assignedToId])
+  @@index([tenantId, score])
+  @@map("leads")
+}
+
+enum LeadSource {
+  WEBSITE_FORM
+  WHATSAPP
+  PHONE_CALL
+  REFERRAL
+  PROPERTY_PORTAL // 99acres, MagicBricks, Housing.com
+  SOCIAL_MEDIA
+  WALK_IN
+  CSV_IMPORT
+  OTHER
+}
+
+enum LeadStage {
+  NEW
+  CONTACTED
+  QUALIFIED
+  VISIT_SCHEDULED
+  VISIT_DONE
+  NEGOTIATION
+  BOOKED
+  LOST
+}
+
+model PipelineStageLog {
+  id        String     @id @default(uuid())
+  leadId    String
+  fromStage LeadStage?
+  toStage   LeadStage
+  movedById String?
+  note      String?
+  movedAt   DateTime   @default(now())
+
+  lead    Lead  @relation(fields: [leadId], references: [id])
+  movedBy User? @relation("MovedBy", fields: [movedById], references: [id])
+
+  @@index([leadId])
+  @@map("pipeline_stage_logs")
+}
+
+// ─────────────────────────────────────────────
+// COMMUNICATIONS
+// ─────────────────────────────────────────────
+
+model Communication {
+  id         String      @id @default(uuid())
+  tenantId   String
+  leadId     String
+  channel    CommChannel
+  direction  Direction
+  content    String
+  mediaUrl   String?
+  status     CommStatus  @default(SENT)
+  externalId String? // Twilio message SID
+  metadata   Json        @default("{}")
+  sentAt     DateTime    @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  lead   Lead   @relation(fields: [leadId], references: [id])
+
+  @@index([leadId])
+  @@index([tenantId])
+  @@map("communications")
+}
+
+enum CommChannel {
+  WHATSAPP
+  SMS
+  CALL
+  EMAIL
+  IN_APP
+}
+
+enum Direction {
+  INBOUND
+  OUTBOUND
+}
+
+enum CommStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  READ
+  FAILED
+}
+
+// ─────────────────────────────────────────────
+// SITE VISITS
+// ─────────────────────────────────────────────
+
+model SiteVisit {
+  id          String        @id @default(uuid())
+  leadId      String
+  projectId   String
+  agentId     String?
+  scheduledAt DateTime
+  status      VisitStatus   @default(SCHEDULED)
+  outcome     VisitOutcome?
+  notes       String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  lead    Lead    @relation(fields: [leadId], references: [id])
+  project Project @relation(fields: [projectId], references: [id])
+  agent   User?   @relation("AgentVisits", fields: [agentId], references: [id])
+
+  @@index([leadId])
+  @@index([agentId])
+  @@index([scheduledAt])
+  @@map("site_visits")
+}
+
+enum VisitStatus {
+  SCHEDULED
+  CONFIRMED
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+enum VisitOutcome {
+  INTERESTED
+  NOT_INTERESTED
+  NEEDS_FOLLOW_UP
+  BOOKED_ON_SPOT
+}
+
+// ─────────────────────────────────────────────
+// BOOKINGS
+// ─────────────────────────────────────────────
+
+model Booking {
+  id          String        @id @default(uuid())
+  tenantId    String
+  leadId      String
+  unitId      String
+  amount      Decimal
+  paymentPlan String?
+  documents   String[] // R2 file keys
+  status      BookingStatus @default(PENDING)
+  notes       String?
+  bookedAt    DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  lead   Lead   @relation(fields: [leadId], references: [id])
+  unit   Unit   @relation(fields: [unitId], references: [id])
+
+  @@unique([unitId]) // one active booking per unit
+  @@index([tenantId])
+  @@index([leadId])
+  @@map("bookings")
+}
+
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+}
+
+// ─────────────────────────────────────────────
+// AI SCORES & FOLLOW-UP TASKS
+// ─────────────────────────────────────────────
+
+model AIScore {
+  id              String      @id @default(uuid())
+  tenantId        String
+  leadId          String
+  intentLevel     IntentLevel
+  probability     Decimal // 0.0 – 1.0 conversion probability
+  suggestedAction String?
+  reasoning       String?
+  scoredAt        DateTime    @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  lead   Lead   @relation(fields: [leadId], references: [id])
+
+  @@index([leadId])
+  @@map("ai_scores")
+}
+
+enum IntentLevel {
+  HOT
+  WARM
+  COLD
+}
+
+model FollowUpTask {
+  id           String       @id @default(uuid())
+  tenantId     String
+  leadId       String
+  assignedToId String?
+  type         TaskType
+  content      String // AI-generated or manual message content
+  channel      CommChannel?
+  completed    Boolean      @default(false)
+  completedAt  DateTime?
+  dueAt        DateTime
+  createdAt    DateTime     @default(now())
+
+  tenant     Tenant @relation(fields: [tenantId], references: [id])
+  lead       Lead   @relation(fields: [leadId], references: [id])
+  assignedTo User?  @relation("AssignedFollowUps", fields: [assignedToId], references: [id])
+
+  @@index([tenantId, completed, dueAt])
+  @@index([assignedToId])
+  @@map("follow_up_tasks")
+}
+
+enum TaskType {
+  CALL
+  WHATSAPP_MESSAGE
+  SMS
+  EMAIL
+  SCHEDULE_VISIT
+  SEND_BROCHURE
+  MANUAL
+}
