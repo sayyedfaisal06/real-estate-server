@@ -1,4 +1,3 @@
-// src/server.ts
 import app from "./app";
 import { env } from "./config";
 import { connectDB, disconnectDB } from "./config/database";
@@ -9,20 +8,25 @@ import { logger } from "./utils/logger";
 let followUpInterval: NodeJS.Timeout;
 
 async function start() {
-  // Connect to DB
-  await connectDB();
+  // 🚀 Start HTTP server FIRST (important for Railway)
+  const PORT = process.env.PORT || env.PORT || "0.0.0.0";
 
-  // Start HTTP server
-  const server = app.listen(env.PORT, () => {
-    logger.info(
-      `🚀 Propflow API running on port ${env.PORT} [${env.NODE_ENV}]`,
-    );
-    logger.info(
-      `📡 API base: http://localhost:${env.PORT}/api/${env.API_VERSION}`,
-    );
+  const server = app.listen(PORT, () => {
+    logger.info(`🚀 Propflow API running on port ${PORT} [${env.NODE_ENV}]`);
   });
 
-  // Follow-up scheduler — runs every 60 seconds
+  // 🔌 Connect DB (non-blocking)
+  connectDB()
+    .then(() => logger.info("✅ Database connected"))
+    .catch((err) => logger.error("❌ DB connection failed", err));
+
+  // 🔌 Connect Redis safely
+  redis
+    .connect?.()
+    .then(() => logger.info("✅ Redis connected"))
+    .catch((err) => logger.warn("⚠️ Redis failed, continuing...", err));
+
+  // ⏱️ Follow-up scheduler
   followUpInterval = setInterval(async () => {
     try {
       await scheduleFollowUps();
@@ -38,13 +42,17 @@ async function start() {
     clearInterval(followUpInterval);
 
     server.close(async () => {
-      await disconnectDB();
-      await redis.quit();
+      try {
+        await disconnectDB();
+        await redis.quit();
+      } catch (e) {
+        logger.error("Shutdown error", e);
+      }
+
       logger.info("Server shut down cleanly");
       process.exit(0);
     });
 
-    // Force exit after 10s
     setTimeout(() => {
       logger.error("Forced shutdown after timeout");
       process.exit(1);
